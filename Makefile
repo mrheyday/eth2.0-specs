@@ -4,12 +4,11 @@ TEST_LIBS_DIR = ./tests/core
 PY_SPEC_DIR = $(TEST_LIBS_DIR)/pyspec
 TEST_VECTOR_DIR = ../eth2.0-spec-tests/tests
 GENERATOR_DIR = ./tests/generators
-DEPOSIT_CONTRACT_COMPILER_DIR = ./deposit_contract/compiler
-DEPOSIT_CONTRACT_TESTER_DIR = ./deposit_contract/tester
+SOLIDITY_DEPOSIT_CONTRACT_DIR = ./solidity_deposit_contract
+SOLIDITY_DEPOSIT_CONTRACT_SOURCE = ${SOLIDITY_DEPOSIT_CONTRACT_DIR}/deposit_contract.sol
+SOLIDITY_FILE_NAME = deposit_contract.json
+DEPOSIT_CONTRACT_TESTER_DIR = ${SOLIDITY_DEPOSIT_CONTRACT_DIR}/web3_tester
 CONFIGS_DIR = ./configs
-
-CURRENT_DIR = ${CURDIR}
-MYPY_STUBS_DIR = $(CURRENT_DIR)/mypy_stubs
 
 # Collect a list of generator names
 GENERATORS = $(sort $(dir $(wildcard $(GENERATOR_DIR)/*/.)))
@@ -25,7 +24,14 @@ MARKDOWN_FILES = $(wildcard $(SPEC_DIR)/phase0/*.md) $(wildcard $(SPEC_DIR)/phas
 COV_HTML_OUT=.htmlcov
 COV_INDEX_FILE=$(PY_SPEC_DIR)/$(COV_HTML_OUT)/index.html
 
-MYPY_CONFIG_NAME = mypy.ini
+CURRENT_DIR = ${CURDIR}
+LINTER_CONFIG_FILE = $(CURRENT_DIR)/linter.ini
+MYPY_STUBS_DIR = $(CURRENT_DIR)/mypy_stubs
+
+export DAPP_SKIP_BUILD:=1
+export DAPP_SRC:=$(SOLIDITY_DEPOSIT_CONTRACT_DIR)
+export DAPP_LIB:=$(SOLIDITY_DEPOSIT_CONTRACT_DIR)/lib
+export DAPP_JSON:=build/combined.json
 
 .PHONY: clean partial_clean all test citest lint generate_tests pyspec install_test open_cov \
         install_deposit_contract_tester test_deposit_contract install_deposit_contract_compiler \
@@ -40,7 +46,6 @@ partial_clean:
 	rm -rf .pytest_cache
 	rm -f .coverage
 	rm -rf $(PY_SPEC_DIR)/.pytest_cache
-	rm -rf $(DEPOSIT_CONTRACT_COMPILER_DIR)/.pytest_cache
 	rm -rf $(DEPOSIT_CONTRACT_TESTER_DIR)/.pytest_cache
 	rm -rf $(PY_SPEC_DIR)/phase0
 	rm -rf $(PY_SPEC_DIR)/phase1
@@ -48,7 +53,7 @@ partial_clean:
 	rm -rf $(PY_SPEC_DIR)/.coverage
 	rm -rf $(PY_SPEC_DIR)/test-reports
 	rm -rf eth2spec.egg-info dist build
-
+	rm -rf build
 
 clean: partial_clean
 	rm -rf venv
@@ -76,19 +81,19 @@ pyspec:
 
 # installs the packages to run pyspec tests
 install_test:
-	python3 -m venv venv; . venv/bin/activate; pip3 install .[test] .[lint]
+	python3.8 -m venv venv; . venv/bin/activate; pip3 install .[lint]; pip3 install -e .[test]
 
 test: pyspec
 	. venv/bin/activate; cd $(PY_SPEC_DIR); \
-	python -m pytest -n 4 --cov=eth2spec.phase0.spec --cov=eth2spec.phase1.spec --cov-report="html:$(COV_HTML_OUT)" --cov-branch eth2spec
+	python -m pytest -n 4 --disable-bls --cov=eth2spec.phase0.spec --cov=eth2spec.phase1.spec --cov-report="html:$(COV_HTML_OUT)" --cov-branch eth2spec
 
 find_test: pyspec
 	. venv/bin/activate; cd $(PY_SPEC_DIR); \
-	python -m pytest -k=$(K) --cov=eth2spec.phase0.spec --cov=eth2spec.phase1.spec --cov-report="html:$(COV_HTML_OUT)" --cov-branch eth2spec
+	python -m pytest -k=$(K) --disable-bls --cov=eth2spec.phase0.spec --cov=eth2spec.phase1.spec --cov-report="html:$(COV_HTML_OUT)" --cov-branch eth2spec
 
 citest: pyspec
 	mkdir -p tests/core/pyspec/test-reports/eth2spec; . venv/bin/activate; cd $(PY_SPEC_DIR); \
-	python -m pytest -n 4 --junitxml=eth2spec/test_results.xml eth2spec
+	python -m pytest -n 4 --bls-type=milagro --junitxml=eth2spec/test_results.xml eth2spec
 
 open_cov:
 	((open "$(COV_INDEX_FILE)" || xdg-open "$(COV_INDEX_FILE)") &> /dev/null) &
@@ -106,27 +111,29 @@ codespell:
 
 lint: pyspec
 	. venv/bin/activate; cd $(PY_SPEC_DIR); \
-	flake8  --ignore=E252,W504,W503 --max-line-length=120 ./eth2spec \
+	flake8  --config $(LINTER_CONFIG_FILE) ./eth2spec \
 	&& export MYPYPATH=$(MYPY_STUBS_DIR) \
-	&& mypy --config-file $(CURDIR)/$(MYPY_CONFIG_NAME) -p eth2spec.phase0 -p eth2spec.phase1;
-
-install_deposit_contract_tester:
-	cd $(DEPOSIT_CONTRACT_TESTER_DIR); python3 -m venv venv; . venv/bin/activate; pip3 install -r requirements.txt
-
-test_deposit_contract:
-	cd $(DEPOSIT_CONTRACT_TESTER_DIR); . venv/bin/activate; \
-	python -m pytest .
-
-install_deposit_contract_compiler:
-	cd $(DEPOSIT_CONTRACT_COMPILER_DIR); python3.7 -m venv venv; . venv/bin/activate; pip3.7 install -r requirements.txt
+	&& mypy --config-file $(LINTER_CONFIG_FILE) -p eth2spec.phase0 -p eth2spec.phase1
 
 compile_deposit_contract:
-	cd $(DEPOSIT_CONTRACT_COMPILER_DIR); . venv/bin/activate; \
-	python3.7 deposit_contract/compile.py contracts/validator_registration.vy
+	@cd $(SOLIDITY_DEPOSIT_CONTRACT_DIR)
+	@git submodule update --recursive --init
+	@solc --metadata-literal --optimize --optimize-runs 5000000 --bin --abi --combined-json=abi,bin,bin-runtime,srcmap,srcmap-runtime,ast,metadata,storage-layout --overwrite -o build $(SOLIDITY_DEPOSIT_CONTRACT_SOURCE) $(SOLIDITY_DEPOSIT_CONTRACT_DIR)/tests/deposit_contract.t.sol
+	@/bin/echo -n '{"abi": ' > $(SOLIDITY_FILE_NAME)
+	@cat build/DepositContract.abi >> $(SOLIDITY_FILE_NAME)
+	@/bin/echo -n ', "bytecode": "0x' >> $(SOLIDITY_FILE_NAME)
+	@cat build/DepositContract.bin >> $(SOLIDITY_FILE_NAME)
+	@/bin/echo -n '"}' >> $(SOLIDITY_FILE_NAME)
 
-test_compile_deposit_contract:
-	cd $(DEPOSIT_CONTRACT_COMPILER_DIR); . venv/bin/activate; \
-	python3.7 -m pytest .
+test_deposit_contract:
+	dapp test -v --fuzz-runs 5
+
+install_deposit_contract_web3_tester:
+	cd $(DEPOSIT_CONTRACT_TESTER_DIR); python3 -m venv venv; . venv/bin/activate; pip3 install -r requirements.txt
+
+test_deposit_contract_web3_tests:
+	cd $(DEPOSIT_CONTRACT_TESTER_DIR); . venv/bin/activate; \
+	python -m pytest .
 
 # Runs a generator, identified by param 1
 define run_generator
