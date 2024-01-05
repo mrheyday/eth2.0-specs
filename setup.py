@@ -535,7 +535,7 @@ setup(
     install_requires=[
         "eth-utils>=1.3.0,<2",
         "eth-typing>=2.1.0,<3.0.0",
-        "pycryptodome==3.9.4",
+        "pycryptodome==3.19.1",
         "py_ecc==4.0.0",
         "milagro_bls_binding==1.3.0",
         "dataclasses==0.6",
